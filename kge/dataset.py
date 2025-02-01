@@ -600,3 +600,31 @@ NOT RECOMMENDED: You can update the timestamp of all cached files using:
         """
         map_ = self.load_map(key, as_list=True)
         return Dataset._map_indexes(indexes, map_)
+
+    def _create_edge_index(self) -> Tensor:
+        """Create edge index from training triples for GCN."""
+        train_triples = self.split('train')
+        
+        # Get subject and object pairs (ignoring relations and time for graph structure)
+        edges_s_to_o = train_triples[:, [0, 2]]  # subject -> object edges
+        edges_o_to_s = train_triples[:, [2, 0]]  # object -> subject edges (for undirected graph)
+        
+        # Combine both directions for undirected graph
+        edge_index = torch.cat([edges_s_to_o, edges_o_to_s], dim=0).t()
+        
+        # Remove duplicates and self-loops
+        edge_index = torch.unique(edge_index, dim=1)
+        
+        return edge_index
+
+    def edge_index(self) -> Tensor:
+        """Get or create the edge index tensor for GCN.
+        
+        Returns:
+            Tensor: A (2, num_edges) tensor containing the edge indices.
+        """
+        if 'edge_index' not in self._indexes:
+            self._indexes['edge_index'] = self._create_edge_index()
+            self.config.log(f"Created edge index with {self._indexes['edge_index'].size(1)} edges")
+        
+        return self._indexes['edge_index']
