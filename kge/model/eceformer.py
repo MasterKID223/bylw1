@@ -89,7 +89,9 @@ class ECEformerScorer(RelationalScorer):
         device = p_emb.device
 
         ctx_list, ctx_size = self.dataset.index('neighbor')
+        ctx_list = ctx_list.to(device)
         ctx_ids = ctx_list[ids].to(device).transpose(1, 2)
+        ctx_size = ctx_size.to(device)
         ctx_size = ctx_size[ids].to(device)
 
         # sample neighbors unifromly during training

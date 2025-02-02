@@ -34,14 +34,13 @@ class LookupEmbedder(KgeEmbedder):
             self.vocab_size, self.dim, sparse=self.sparse
         )
 
-        # Add GCN layers
-        self.num_gcn_layers = self.get_option("gcn_layers", default=2)
-        self.gcn_layers = torch.nn.ModuleList()
-        for i in range(self.num_gcn_layers):
-            self.gcn_layers.append(GCNConv(self.dim, self.dim))
-        
-        # Add dropout for GCN
-        self.gcn_dropout = torch.nn.Dropout(self.get_option("gcn_dropout", default=0.1))
+        # Add GCN layers only if this embedder is for entities
+        if "entity" in configuration_key:
+            self.num_gcn_layers = self.get_option("gcn_layers")
+            self.gcn_layers = torch.nn.ModuleList()
+            for i in range(self.num_gcn_layers):
+                self.gcn_layers.append(GCNConv(self.dim, self.dim))
+            self.gcn_dropout = torch.nn.Dropout(self.get_option("gcn_dropout"))
 
         # initialize weights
         init_ = self.get_option("initialize")
@@ -94,41 +93,49 @@ class LookupEmbedder(KgeEmbedder):
         return self._cached_edge_index
 
     def embed(self, indexes: Tensor) -> Tensor:
-        # Get base embeddings
-        embeddings = self._embeddings(indexes.long())
+        # For relations and times, just use normal embedding
+        if "relation" in self.configuration_key or "time" in self.configuration_key:
+            return self._postprocess(self._embeddings(indexes.long()))
+
+        # For entities, apply GCN
+        all_embeddings = self._embeddings_all()
+        batch_embeddings = self._embeddings(indexes.long())
         
-        # Apply GCN if we're in training mode or explicitly asked to
-        if self.training or self.get_option("always_use_gcn", default=False):
+        if self.training or self.get_option("always_use_gcn"):
             edge_index = self._get_graph_structure()
+            edge_index = edge_index.to(all_embeddings.device)
             
-            # Apply GCN layers
-            x = embeddings
+            x = all_embeddings
             for gcn_layer in self.gcn_layers:
                 x = gcn_layer(x, edge_index)
                 x = F.relu(x)
                 x = self.gcn_dropout(x)
             
-            # Combine original embeddings with GCN output using residual connection
-            embeddings = embeddings + x
+            embeddings = x[indexes.long()]
+            embeddings = batch_embeddings + embeddings
+        else:
+            embeddings = batch_embeddings
 
         return self._postprocess(embeddings)
 
     def embed_all(self) -> Tensor:
-        # Get all base embeddings
+        # For relations and times, just use normal embedding
+        if "relation" in self.configuration_key or "time" in self.configuration_key:
+            return self._postprocess(self._embeddings_all())
+
+        # For entities, apply GCN
         embeddings = self._embeddings_all()
         
-        # Apply GCN if we're in training mode or explicitly asked to
-        if self.training or self.get_option("always_use_gcn", default=False):
+        if self.training or self.get_option("always_use_gcn"):
             edge_index = self._get_graph_structure()
+            edge_index = edge_index.to(embeddings.device)
             
-            # Apply GCN layers
             x = embeddings
             for gcn_layer in self.gcn_layers:
                 x = gcn_layer(x, edge_index)
                 x = F.relu(x)
                 x = self.gcn_dropout(x)
             
-            # Combine original embeddings with GCN output using residual connection
             embeddings = embeddings + x
 
         return self._postprocess(embeddings)
