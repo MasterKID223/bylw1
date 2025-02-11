@@ -340,7 +340,8 @@ class EdgeEvaluator(nn.Module):
 
         eval_edge_time = eval_edge_time.view(-1)
         assert len(eval_edges) == len(eval_edge_time), (len(eval_edges), len(eval_edge_time))
-        src, rel, dst = eval_edges[:, 0].type(settings.DGL_GRAPH_ID_TYPE), eval_edges[:, 1], eval_edges[:, 2].type(settings.DGL_GRAPH_ID_TYPE)
+        src, rel, dst = eval_edges[:, 0].type(settings.DGL_GRAPH_ID_TYPE), eval_edges[:, 1], eval_edges[:, 2].type(
+            settings.DGL_GRAPH_ID_TYPE)
         src_chunks = torch.split(src, SPLIT_SIZE)
         rel_chunks = torch.split(rel, SPLIT_SIZE)
         dst_chunks = torch.split(dst, SPLIT_SIZE)

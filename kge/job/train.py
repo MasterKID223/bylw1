@@ -13,6 +13,7 @@ import numpy as np
 from kge import Config, Dataset
 from kge.job import Job
 from kge.model import KgeModel
+from kge.model.evokg_model import data
 
 from kge.util import KgeLoss, KgeOptimizer, KgeSampler, KgeLRScheduler
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -89,6 +90,7 @@ class TrainingJob(Job):
         self.is_prepared = False
 
         # attributes filled in by implementing classes
+        self.evokg_loader = None
         self.loader = None
         self.num_examples = None
         self.type_str: Optional[str] = None
@@ -302,6 +304,7 @@ class TrainingJob(Job):
 
         # prepare the job is not done already
         if not self.is_prepared:
+            # todo: 在_prepare()中加载evokg中的loader
             self._prepare()
             self.model.prepare_job(self)  # let the model add some hooks
             self.is_prepared = True
@@ -318,6 +321,7 @@ class TrainingJob(Job):
 
         update_freq = self.config.get("train.update_freq")
         # process each batch
+        # todo: eceformer的loader修改为只要最后一个时间戳的loader
         for batch_index, batch in enumerate(self.loader):
             for f in self.pre_batch_hooks:
                 f(self)
@@ -1075,6 +1079,12 @@ class TrainingJob1vsAll(TrainingJob):
             worker_init_fn=_generate_worker_init_fn(self.config),
             pin_memory=self.config.get("train.pin_memory"),
         )
+
+        # todo: evokg的loader
+        G = data.load_temporal_knowledge_graph(args.graph)
+
+
+
 
         self.is_prepared = True
 
