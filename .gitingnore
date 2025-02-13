@@ -1,7 +1,9 @@
 
 *.del
-*.txt
 *.pckl
 .idea/*
 *idea/*
 *.xml
+*data/
+~*data/*.py
+local/

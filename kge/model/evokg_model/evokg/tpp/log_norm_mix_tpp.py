@@ -4,7 +4,7 @@ import torch
 import torch.distributions as D
 import torch.nn as nn
 
-from evokg.time_interval_transform import TimeIntervalTransform
+from kge.model.evokg_model.evokg.time_interval_transform import TimeIntervalTransform
 from torch.distributions import Normal, MixtureSameFamily, TransformedDistribution
 
 

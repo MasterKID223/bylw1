@@ -3,7 +3,7 @@ import logging
 import os
 from datetime import datetime
 
-import settings
+import kge.model.evokg_model.settings as settings
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

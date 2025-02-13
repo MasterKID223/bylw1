@@ -3,7 +3,7 @@ import logging
 import os
 import dill as pickle
 
-import settings
+import kge.model.evokg_model.settings as settings
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] [%(module)s.%(funcName)s] %(message)s')
 _logger = logging.getLogger(__name__)

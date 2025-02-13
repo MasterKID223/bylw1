@@ -7,10 +7,10 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-import settings
-from evokg.model import Model, EventTimeHelper
-from utils.eval_utils import RankingMetric, RegressionMetric
-from utils.log_utils import logger, get_log_root_path
+import kge.model.evokg_model.settings as settings
+from kge.model.evokg_model.evokg.model import Model, EventTimeHelper
+from kge.model.evokg_model.utils.eval_utils import RankingMetric, RegressionMetric
+from kge.model.evokg_model.utils.log_utils import logger, get_log_root_path
 
 
 def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
