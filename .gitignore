@@ -1,7 +1,10 @@
-
+*.iml
 *.del
 *.txt
 *.pckl
 .idea/*
 *idea/*
 *.xml
+*data/
+!*.py
+local/

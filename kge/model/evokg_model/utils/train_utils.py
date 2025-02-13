@@ -3,8 +3,8 @@ import os
 import torch
 from torch import nn as nn
 
-import settings
-from utils.log_utils import logger
+import kge.model.evokg_model.settings as settings
+from kge.model.evokg_model.utils.log_utils import logger
 
 
 class EarlyStopping:

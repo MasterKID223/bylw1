@@ -6,10 +6,10 @@ import torch
 import torch.nn as nn
 from torch_scatter import scatter_mean
 
-import settings
-from evokg.gnn import RGCN
-from evokg.tpp import LogNormMixTPP
-from utils.model_utils import node_norm_to_edge_norm, get_embedding
+import kge.model.evokg_model.settings as settings
+from kge.model.evokg_model.evokg.gnn import RGCN
+from kge.model.evokg_model.evokg.tpp import LogNormMixTPP
+from kge.model.evokg_model.utils.model_utils import node_norm_to_edge_norm, get_embedding
 
 MultiAspectEmbedding = namedtuple('MultiAspectEmbedding', ['structural', 'temporal'], defaults=[None, None])
 

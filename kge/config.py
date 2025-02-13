@@ -307,6 +307,7 @@ class Config:
         """
         with open(filename, "r") as file:
             new_options = yaml.load(file, Loader=yaml.SafeLoader)
+        tmp = create
         if new_options is not None:
             self.load_options(
                 new_options,

@@ -1,3 +1,4 @@
+import datetime
 import itertools
 import os
 import math
@@ -5,15 +6,27 @@ import time
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import partial
 
+import dgl
 import torch
 import torch.utils.data
 import numpy as np
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from kge import Config, Dataset
 from kge.job import Job
 from kge.model import KgeModel
-from kge.model.evokg_model import data
+from kge.model.evokg_model import data, utils, settings
+from kge.model.evokg_model.evokg.model import EmbeddingUpdater, Combiner, EdgeModel, InterEventTimeModel, Model, \
+    MultiAspectEmbedding
+from kge.model.evokg_model.evokg.time_interval_transform import TimeIntervalTransform
+from kge.model.evokg_model.train import compute_loss
+from kge.model.evokg_model.utils.log_utils import get_log_root_path
+from kge.model.evokg_model.utils.model_utils import get_embedding
+from kge.model.evokg_model.utils.train_utils import activation_string
+
 
 from kge.util import KgeLoss, KgeOptimizer, KgeSampler, KgeLRScheduler
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -52,7 +65,7 @@ class TrainingJob(Job):
     """
 
     def __init__(
-        self, config: Config, dataset: Dataset, parent_job: Job = None, model=None
+            self, config: Config, dataset: Dataset, parent_job: Job = None, model=None
     ) -> None:
         from kge.job import EvaluationJob
 
@@ -69,9 +82,9 @@ class TrainingJob(Job):
 
         if config.exists("train.optimizer_args.schedule"):
             config.set("train.optimizer_args.t_total",
-                    math.ceil(self.dataset.split(self.train_split).size(0)
-                                / self.batch_size) * config.get("train.max_epochs"),
-                    create=True, log=True)
+                       math.ceil(self.dataset.split(self.train_split).size(0)
+                                 / self.batch_size) * config.get("train.max_epochs"),
+                       create=True, log=True)
         self.optimizer = KgeOptimizer.create(config, self.model)
         self.kge_lr_scheduler = KgeLRScheduler(config, self.optimizer)
 
@@ -89,11 +102,33 @@ class TrainingJob(Job):
         )
         self.is_prepared = False
 
-        # attributes filled in by implementing classes
+        # evokg
         self.evokg_loader = None
+        self.evokg_num_relations = None
+        self.evokg_train_data_loader = None
+        self.evokg_val_data_loader = None
+        self.evokg_test_data_loader = None
+        self.evokg_node_latest_event_time = None
+        self.evokg_time_interval_transform = None
+        self.evokg_embedding_updater = None
+        self.evokg_combiner = None
+        self.evokg_edge_model = None
+        self.evokg_inter_event_time_model = None
+        self.evokg_model = None
+        self.evokg_static_entity_embeds = None
+        self.evokg_init_dynamic_entity_embeds = None
+        self.evokg_init_dynamic_relation_embeds = None
+        self.evokg_edge_optimizer = None
+        self.evokg_time_optimizer = None
+        self.evokg_log_root_path = None
+
+        # attributes filled in by implementing classes
         self.loader = None
         self.num_examples = None
         self.type_str: Optional[str] = None
+
+        self.last_t_loader = None
+        self.last_t_num_examples = None
 
         #: Hooks run after training for an epoch.
         #: Signature: job, trace_entry
@@ -127,7 +162,7 @@ class TrainingJob(Job):
 
     @staticmethod
     def create(
-        config: Config, dataset: Dataset, parent_job: Job = None, model=None
+            config: Config, dataset: Dataset, parent_job: Job = None, model=None
     ) -> "TrainingJob":
         """Factory method to create a training job."""
         if config.get("train.type") == "KvsAll":
@@ -140,6 +175,170 @@ class TrainingJob(Job):
             # perhaps TODO: try class with specified name -> extensibility
             raise ValueError("train.type")
 
+    def evokg_model_init(self):
+        # todo: evokg的loader
+        G = data.load_temporal_knowledge_graph(self.config.get("evokg.graph"))
+        self.num_relations = G.num_relations
+        self.config.log("loading evokg Graph data......")
+        self.config.log("\n" + "=" * 80 + "\n"
+                                          f"[{self.config.get('evokg.graph')}]\n"
+                                          f"# nodes={G.number_of_nodes()}\n"
+                                          f"# edges={G.number_of_edges()}\n"
+                                          f"# relations={G.num_relations}\n" + "=" * 80 + "\n")
+        collate_fn = partial(utils.collate_fn, G=G)
+        self.evokg_train_data_loader = DataLoader(G.train_times, shuffle=False, collate_fn=collate_fn)
+        self.evokg_val_data_loader = DataLoader(G.val_times, shuffle=False, collate_fn=collate_fn)
+        self.evokg_test_data_loader = DataLoader(G.test_times, shuffle=False, collate_fn=collate_fn)
+
+        """Model"""
+        # 形状为 (G.number_of_nodes(), G.number_of_nodes() + 1, 2)
+        self.evokg_node_latest_event_time = torch.zeros(G.number_of_nodes(), G.number_of_nodes() + 1, 2,
+                                                        dtype=settings.INTER_EVENT_TIME_DTYPE)
+        # 对数变换通常用于将时间间隔的分布变得更均匀，尤其是在时间间隔跨度较大时。
+        self.evokg_time_interval_transform = TimeIntervalTransform(
+            log_transform=self.config.get("evokg.time_interval_log_transform"))
+
+        # entity的embedding更新器
+        self.evokg_embedding_updater = EmbeddingUpdater(G.number_of_nodes(),
+                                                        self.config.get("evokg.static_entity_embed_dim"),
+                                                        self.config.get("evokg.structural_dynamic_entity_embed_dim"),
+                                                        self.config.get("evokg.temporal_dynamic_entity_embed_dim"),
+                                                        self.config.get("evokg.embedding_updater_structural_gconv"),
+                                                        # 没有
+                                                        self.config.get("evokg.embedding_updater_temporal_gconv"),
+                                                        self.evokg_node_latest_event_time,
+                                                        G.num_relations,
+                                                        self.config.get("evokg.rel_embed_dim"),
+                                                        num_gconv_layers=self.config.get("evokg.num_gconv_layers"),
+                                                        num_rnn_layers=self.config.get("evokg.num_rnn_layers"),
+                                                        time_interval_transform=self.evokg_time_interval_transform,
+                                                        dropout=self.config.get("evokg.dropout"),
+                                                        activation=activation_string(self.config.get(
+                                                            "evokg.embedding_updater_activation")),
+                                                        graph_name=self.config.get("evokg.graph")).to(self.device)
+        if self.config.get("evokg.static_dynamic_combine_mode") == "static_only":
+            assert self.config.get("evokg.embedding_updater_structural_gconv") is None, self.config.get(
+                "evokg.embedding_updater_structural_gconv")
+            assert self.config.get("evokg.embedding_updater_temporal_gconv") is None, self.config.get(
+                "evokg.embedding_updater_temporal_gconv")
+
+        self.evokg_combiner = Combiner(
+            self.config.get("evokg.static_entity_embed_dim"),
+            self.config.get("evokg.structural_dynamic_entity_embed_dim"),
+            self.config.get("evokg.static_dynamic_combine_mode"),
+            # self.config.get("evokg.combiner_gconv"),
+            None,
+            G.num_relations,
+            self.config.get("evokg.dropout"),
+            self.config.get("evokg.combiner_activation"),
+        ).to(self.device)
+
+        # 边模型
+        self.evokg_edge_model = EdgeModel(G.number_of_nodes(),
+                                          G.num_relations,
+                                          self.config.get("evokg.rel_embed_dim"),
+                                          self.evokg_combiner,
+                                          dropout=self.config.get("evokg.dropout")).to(self.device)
+
+        # 时间间隔模型
+        self.evokg_inter_event_time_model = InterEventTimeModel(
+            dynamic_entity_embed_dim=self.config.get("evokg.temporal_dynamic_entity_embed_dim"),
+            static_entity_embed_dim=self.config.get("evokg.static_entity_embed_dim"),
+            num_rels=G.num_relations,
+            rel_embed_dim=self.config.get("evokg.rel_embed_dim"),
+            num_mix_components=self.config.get("evokg.num_mix_components"),
+            time_interval_transform=self.evokg_time_interval_transform,
+            inter_event_time_mode=self.config.get("evokg.inter_event_time_mode"),
+            dropout=self.config.get("evokg.dropout"))
+
+        self.evokg_model = Model(self.evokg_embedding_updater, self.evokg_combiner, self.evokg_edge_model, self.evokg_inter_event_time_model,
+                                 self.evokg_node_latest_event_time).to(
+            self.device)
+
+        """Static and dynamic entity embeddings"""
+        self.evokg_static_entity_embeds = MultiAspectEmbedding(
+            structural=get_embedding(G.num_nodes(), self.config.get("evokg.static_entity_embed_dim"), zero_init=False),
+            temporal=get_embedding(G.num_nodes(), self.config.get("evokg.static_entity_embed_dim"), zero_init=False),
+        )
+        # 论文中page4 equation(6)下的zero_initialized
+        self.evokg_init_dynamic_entity_embeds = MultiAspectEmbedding(
+            structural=get_embedding(G.num_nodes(), [self.config.get("evokg.num_rnn_layers"), self.config.get("evokg.structural_dynamic_entity_embed_dim")],
+                                     zero_init=True),
+            temporal=get_embedding(G.num_nodes(), [self.config.get("evokg.num_rnn_layers"), self.config.get("evokg.temporal_dynamic_entity_embed_dim"), 2],
+                                   zero_init=True),
+        )
+        self.evokg_init_dynamic_relation_embeds = MultiAspectEmbedding(
+            structural=get_embedding(G.num_relations, [self.config.get("evokg.num_rnn_layers"), self.config.get("evokg.rel_embed_dim"), 2], zero_init=True),
+            temporal=get_embedding(G.num_relations, [self.config.get("evokg.num_rnn_layers"), self.config.get("evokg.rel_embed_dim"), 2], zero_init=True),
+        )
+        self.evokg_log_root_path = get_log_root_path(self.config.get("evokg.graph"), self.config.get("evokg.log_dir"))
+
+    def evokg_compute_loss(self, model, loss, batch_G, static_entity_emb, dynamic_entity_emb, dynamic_relation_emb, args=None, batch_eid=None):
+        assert all([emb.device == torch.device('cpu') for emb in dynamic_entity_emb]), [emb.device for emb in
+                                                                                        dynamic_entity_emb]
+
+        if batch_eid is not None:
+            assert len(batch_eid) > 0, batch_eid.shape
+            sub_batch_G = dgl.edge_subgraph(batch_G, batch_eid.type(settings.DGL_GRAPH_ID_TYPE), preserve_nodes=False)
+            sub_batch_G.ndata[dgl.NID] = batch_G.ndata[dgl.NID][
+                sub_batch_G.ndata[dgl.NID].long()]  # map nid in sub_batch_G to nid in the full graph
+            sub_batch_G = sub_batch_G.to(self.device)
+
+            batch_eid = None  # this is needed to NOT perform further edge selection in the loss functions below
+        else:
+            sub_batch_G = batch_G.to(self.device)
+        sub_batch_G.num_relations = batch_G.num_relations
+        sub_batch_G.num_all_nodes = batch_G.num_all_nodes
+
+        loss_dict = {}
+        """Edge loss"""
+        if loss in ['edge', 'both']:
+            sub_batch_G_structural_static_entity_emb = static_entity_emb.structural[
+                sub_batch_G.ndata[dgl.NID].long()].to(self.device)
+            # [352， 200] 从dynamic_entity_emb中取出当前batch_G中节点的嵌入
+            sub_batch_G_structural_dynamic_entity_emb = dynamic_entity_emb.structural[
+                                                            sub_batch_G.ndata[dgl.NID].long()][:, -1, :].to(
+                self.device)  # [:, -1, :] to retrieve last hidden from rnn 从rnn中检索最后一个隐藏项
+            sub_batch_G_combined_emb = model.combiner(sub_batch_G_structural_static_entity_emb,
+                                                      sub_batch_G_structural_dynamic_entity_emb,
+                                                      sub_batch_G)
+            # [240, 200, 2] 所有关系的嵌入，这里的2应该表示关系和逆关系
+            structural_dynamic_relation_emb = dynamic_relation_emb.structural[:, -1, :, :].to(
+                self.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+
+            # equation(15)
+            edge_LL = model.edge_model(sub_batch_G, sub_batch_G_combined_emb, eid=batch_eid,
+                                       static_emb=sub_batch_G_structural_static_entity_emb,
+                                       dynamic_emb=sub_batch_G_structural_dynamic_entity_emb,
+                                       dynamic_relation_emb=structural_dynamic_relation_emb)
+            loss_dict['edge'] = -edge_LL
+
+        """Inter-event time loss"""
+        if loss in ['time', 'both']:  # 这个是做时间预测的部分，link-pred不用
+            sub_batch_G_temporal_static_entity_emb = static_entity_emb.temporal[sub_batch_G.ndata[dgl.NID].long()].to(
+                self.device)
+            sub_batch_G_temporal_dynamic_entity_emb = dynamic_entity_emb.temporal[sub_batch_G.ndata[dgl.NID].long()][:,
+                                                      -1, :, :].to(
+                self.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+            temporal_dynamic_relation_emb = dynamic_relation_emb.temporal[:, -1, :, :].to(
+                self.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+
+            # equation(16)
+            inter_event_time_LL = model.inter_event_time_model.log_prob_density(
+                sub_batch_G,
+                sub_batch_G_temporal_dynamic_entity_emb,
+                sub_batch_G_temporal_static_entity_emb,
+                temporal_dynamic_relation_emb,
+                model.node_latest_event_time,
+                batch_eid,
+                reduction='mean'
+            )
+            loss_dict['time'] = -inter_event_time_LL
+
+        return loss_dict
+
+
+
     def run(self) -> None:
         """Start/resume the training job and run to completion."""
         self.config.log("Starting training...")
@@ -147,12 +346,14 @@ class TrainingJob(Job):
         checkpoint_keep = self.config.get("train.checkpoint.keep")
         metric_name = self.config.get("valid.metric")
         patience = self.config.get("valid.early_stopping.patience")
+        # evokg data load
+        self.evokg_model_init()
         while True:
             # checking for model improvement according to metric_name
             # and do early stopping and keep the best checkpoint
             if (
-                len(self.valid_trace) > 0
-                and self.valid_trace[-1]["epoch"] == self.epoch
+                    len(self.valid_trace) > 0
+                    and self.valid_trace[-1]["epoch"] == self.epoch
             ):
                 best_index = max(
                     range(len(self.valid_trace)),
@@ -161,9 +362,9 @@ class TrainingJob(Job):
                 if best_index == len(self.valid_trace) - 1:
                     self.save(self.config.checkpoint_file("best"))
                 if (
-                    patience > 0
-                    and len(self.valid_trace) > patience
-                    and best_index < len(self.valid_trace) - patience
+                        patience > 0
+                        and len(self.valid_trace) > patience
+                        and best_index < len(self.valid_trace) - patience
                 ):
                     self.config.log(
                         "Stopping early ({} did not improve over best result ".format(
@@ -173,7 +374,7 @@ class TrainingJob(Job):
                     )
                     break
                 if self.epoch > self.config.get(
-                    "valid.early_stopping.min_threshold.epochs"
+                        "valid.early_stopping.min_threshold.epochs"
                 ) and self.valid_trace[best_index][metric_name] < self.config.get(
                     "valid.early_stopping.min_threshold.metric_value"
                 ):
@@ -205,8 +406,8 @@ class TrainingJob(Job):
 
             # validate and update learning rate
             if (
-                self.config.get("valid.every") > 0
-                and self.epoch % self.config.get("valid.every") == 0
+                    self.config.get("valid.every") > 0
+                    and self.epoch % self.config.get("valid.every") == 0
             ):
                 self.valid_job.epoch = self.epoch
                 trace_entry = self.valid_job.run()
@@ -233,11 +434,11 @@ class TrainingJob(Job):
                 elif checkpoint_keep > 0:
                     # keep a maximum number of checkpoint_keep checkpoints
                     delete_checkpoint_epoch = (
-                        self.epoch - 1 - checkpoint_every * checkpoint_keep
+                            self.epoch - 1 - checkpoint_every * checkpoint_keep
                     )
                 if delete_checkpoint_epoch > 0:
                     if os.path.exists(
-                        self.config.checkpoint_file(delete_checkpoint_epoch)
+                            self.config.checkpoint_file(delete_checkpoint_epoch)
                     ):
                         self.config.log(
                             "Removing old checkpoint {}...".format(
@@ -263,7 +464,7 @@ class TrainingJob(Job):
         torch.save(
             checkpoint, filename,
         )
-        
+
     def save_to(self, checkpoint: Dict) -> Dict:
         """Adds trainjob specific information to the checkpoint"""
         train_checkpoint = {
@@ -322,6 +523,67 @@ class TrainingJob(Job):
         update_freq = self.config.get("train.update_freq")
         # process each batch
         # todo: eceformer的loader修改为只要最后一个时间戳的loader
+        self.evokg_model.train()
+        evokg_epoch_start_time = time.time()
+
+        dynamic_entity_emb_post_train, dynamic_relation_emb_post_train = None, None
+
+        self.evokg_model.node_latest_event_time.zero_()
+        self.evokg_node_latest_event_time.zero_()
+        dynamic_entity_emb = self.evokg_init_dynamic_entity_embeds  # 这是 t_i^{*, t-1} 上一时间的特征
+        dynamic_relation_emb = self.evokg_init_dynamic_relation_embeds
+
+        num_train_batches = len(self.evokg_train_data_loader)
+        train_tqdm = tqdm(self.evokg_train_data_loader)
+
+        epoch_train_loss_dict = defaultdict(list)
+        batch_train_loss = 0
+        batches_train_loss_dict = defaultdict(list)
+        for batch_i, (prior_G, batch_G, cumul_G, batch_times) in enumerate(train_tqdm):
+            train_tqdm.set_description(f"[Training / epoch-{self.epoch} / batch-{batch_i}]")
+            last_batch = batch_i == num_train_batches - 1
+
+            # Based on the current entity embeddings, predict edges in batch_G and compute training loss
+            batch_train_loss_dict = self.evokg_compute_loss(self.evokg_model, self.config.get("evokg.optimize"), batch_G, self.evokg_static_entity_embeds,
+                                                 dynamic_entity_emb, dynamic_relation_emb)
+            batch_train_loss += sum(batch_train_loss_dict.values())
+
+            for loss_term, loss_val in batch_train_loss_dict.items():
+                epoch_train_loss_dict[loss_term].append(loss_val.item())
+                batches_train_loss_dict[loss_term].append(loss_val.item())
+
+            if batch_i > 0 and ((batch_i % self.config.get("evokg.rnn_truncate_every") == 0) or last_batch):
+                # noinspection PyUnresolvedReferences
+                batch_train_loss.backward()
+                batch_train_loss = 0
+
+                if self.config.get("evokg.optimize") in ['edge', 'both']:
+                    self.evokg_edge_optimizer.step()
+                    self.evokg_edge_optimizer.zero_grad()
+                if self.config.get("evokg.optimize") in ['time', 'both']:
+                    self.evokg_time_optimizer.step()
+                    self.evokg_time_optimizer.zero_grad()
+                torch.cuda.empty_cache()
+
+                if self.config.get("embedding_updater_structural_gconv") or self.config.get("embedding_updater_temporal_gconv"):
+                    for emb in dynamic_entity_emb + dynamic_relation_emb:
+                        emb.detach_()
+
+                tqdm.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')} [Epoch {self.epoch:03d}-Batch {batch_i:03d}] "
+                           f"batch train loss total={sum([sum(l) for l in batches_train_loss_dict.values()]):.4f} | "
+                           f"{', '.join([f'{loss_term}={sum(loss_cumul):.4f}' for loss_term, loss_cumul in batches_train_loss_dict.items()])}")
+                batches_train_loss_dict = defaultdict(list)
+
+            dynamic_entity_emb, dynamic_relation_emb = \
+                self.evokg_model.embedding_updater.forward(prior_G, batch_G, cumul_G, self.evokg_static_entity_embeds,
+                                                dynamic_entity_emb, dynamic_relation_emb, self.device)
+
+            if last_batch:
+                # 训练完了一个graph中的所有时刻的图
+                dynamic_entity_emb_post_train = dynamic_entity_emb  # 经过最后一个时间戳后的所有实体的嵌入特征
+                dynamic_relation_emb_post_train = dynamic_relation_emb  # 经过最后一个时间戳后的所有关系的嵌入特征
+
+
         for batch_index, batch in enumerate(self.loader):
             for f in self.pre_batch_hooks:
                 f(self)
@@ -403,7 +665,8 @@ class TrainingJob(Job):
                     "batch": batch_index,
                     "size": batch_result.size,
                     "batches": len(self.loader),
-                    "lr": self.optimizer.get_lr() if hasattr(self.optimizer, 'get_lr') else [group["lr"] for group in self.optimizer.param_groups],
+                    "lr": self.optimizer.get_lr() if hasattr(self.optimizer, 'get_lr') else [group["lr"] for group in
+                                                                                             self.optimizer.param_groups],
                     "avg_loss": batch_result.avg_loss,
                     "penalties": [p.item() for k, p in penalties_torch],
                     "penalty": penalty,
@@ -418,12 +681,12 @@ class TrainingJob(Job):
                 self.trace(**batch_trace, event="batch_completed")
             self.config.print(
                 (
-                    "\r"  # go back
-                    + "{}  batch{: "
-                    + str(1 + int(math.ceil(math.log10(len(self.loader)))))
-                    + "d}/{}"
-                    + ", avg_loss {:.4E}, penalty {:.4E}, cost {:.4E}, time {:6.2f}s"
-                    + "\033[K"  # clear to right
+                        "\r"  # go back
+                        + "{}  batch{: "
+                        + str(1 + int(math.ceil(math.log10(len(self.loader)))))
+                        + "d}/{}"
+                        + ", avg_loss {:.4E}, penalty {:.4E}, cost {:.4E}, time {:6.2f}s"
+                        + "\033[K"  # clear to right
                 ).format(
                     self.config.log_prefix,
                     batch_index,
@@ -451,7 +714,7 @@ class TrainingJob(Job):
         self.config.print("\033[2K\r", end="", flush=True)  # clear line and go back
 
         other_time = (
-            epoch_time - prepare_time - forward_time - backward_time - optimizer_time
+                epoch_time - prepare_time - forward_time - backward_time - optimizer_time
         )
         trace_entry = dict(
             type=self.type_str,
@@ -502,7 +765,7 @@ class TrainingJob(Job):
         backward_time: float
 
     def _process_batch(
-        self, batch_index: int, batch
+            self, batch_index: int, batch
     ) -> "TrainingJob._ProcessBatchResult":
         "Run forward and backward pass on batch and return results."
         raise NotImplementedError
@@ -537,7 +800,7 @@ class TrainingJobKvsAll(TrainingJob):
                     "should be at least 0.".format(self.label_smoothing)
                 )
         elif self.label_smoothing > 0 and self.label_smoothing <= (
-            1.0 / dataset.num_entities()
+                1.0 / dataset.num_entities()
         ):
             if config.get("train.auto_correct"):
                 # just to be sure it's used correctly
@@ -675,19 +938,19 @@ class TrainingJobKvsAll(TrainingJob):
                 end = label_offsets[example_index + 1]
                 size = end - start
                 label_coords_batch[
-                    current_index : (current_index + size), 0
+                current_index: (current_index + size), 0
                 ] = batch_index
-                label_coords_batch[current_index : (current_index + size), 1] = labels[
-                    start:end
-                ]
+                label_coords_batch[current_index: (current_index + size), 1] = labels[
+                                                                               start:end
+                                                                               ]
                 triples_batch[
-                    current_index : (current_index + size), query_col_1
+                current_index: (current_index + size), query_col_1
                 ] = queries[example_index][0]
                 triples_batch[
-                    current_index : (current_index + size), query_col_2
+                current_index: (current_index + size), query_col_2
                 ] = queries[example_index][1]
                 triples_batch[
-                    current_index : (current_index + size), target_col
+                current_index: (current_index + size), target_col
                 ] = labels[start:end]
                 current_index += size
 
@@ -730,20 +993,20 @@ class TrainingJobKvsAll(TrainingJob):
         for query_type, examples in examples_for_query_type.items():
             if query_type == "s_o":
                 labels_for_query_type[query_type] = labels_batch[
-                    examples, : self.dataset.num_relations()
-                ]
+                                                    examples, : self.dataset.num_relations()
+                                                    ]
             else:
                 labels_for_query_type[query_type] = labels_batch[
-                    examples, : self.dataset.num_entities()
-                ]
+                                                    examples, : self.dataset.num_entities()
+                                                    ]
 
         if self.label_smoothing > 0.0:
             # as in ConvE: https://github.com/TimDettmers/ConvE
             for query_type, labels in labels_for_query_type.items():
                 if query_type != "s_o":  # entity targets only for now
                     labels_for_query_type[query_type] = (
-                        1.0 - self.label_smoothing
-                    ) * labels + 1.0 / labels.size(1)
+                                                                1.0 - self.label_smoothing
+                                                        ) * labels + 1.0 / labels.size(1)
 
         prepare_time += time.time()
 
@@ -767,7 +1030,7 @@ class TrainingJobKvsAll(TrainingJob):
                         queries_batch[examples, 0], queries_batch[examples, 1]
                     )
                 loss_value = (
-                    self.loss(scores, labels_for_query_type[query_type]) / batch_size
+                        self.loss(scores, labels_for_query_type[query_type]) / batch_size
                 )
                 loss_value_total = loss_value.item()
                 forward_time += time.time()
@@ -888,7 +1151,7 @@ class TrainingJobNegativeSampling(TrainingJob):
                 # construct gold labels: first column corresponds to positives,
                 # remaining columns to negatives
                 if labels is None or labels.shape != torch.Size(
-                    [chunk_size, 1 + num_samples]
+                        [chunk_size, 1 + num_samples]
                 ):
                     prepare_time -= time.time()
                     labels = torch.zeros(
@@ -1013,7 +1276,7 @@ class TrainingJobNegativeSampling(TrainingJob):
                 # compute chunk loss (concluding the forward pass of the chunk)
                 forward_time -= time.time()
                 loss_value_torch = (
-                    self.loss(scores, labels, num_negatives=num_samples) / batch_size
+                        self.loss(scores, labels, num_negatives=num_samples) / batch_size
                 )
                 loss_value += loss_value_torch.item()
                 forward_time += time.time()
@@ -1027,6 +1290,7 @@ class TrainingJobNegativeSampling(TrainingJob):
         return TrainingJob._ProcessBatchResult(
             loss_value, batch_size, prepare_time, forward_time, backward_time
         )
+
 
 def tiny_value_of_dtype(dtype: torch.dtype):
     """
@@ -1044,9 +1308,11 @@ def tiny_value_of_dtype(dtype: torch.dtype):
     else:
         raise TypeError("Does not support dtype " + str(dtype))
 
+
 def mask_score(vector, mask, demask):
     mask[range(len(demask)), demask] = 0
     return vector + (~mask + tiny_value_of_dtype(vector.dtype)).log()
+
 
 class TrainingJob1vsAll(TrainingJob):
     """Samples SPO pairs and queries sp_ and _po, treating all other entities as negative."""
@@ -1080,11 +1346,23 @@ class TrainingJob1vsAll(TrainingJob):
             pin_memory=self.config.get("train.pin_memory"),
         )
 
-        # todo: evokg的loader
-        G = data.load_temporal_knowledge_graph(args.graph)
-
-
-
+        # eceformer的dataloader只有最后一个t的图
+        train_quadruple = self.dataset.split(self.train_split)
+        last_t = max(train_quadruple[:, -1])
+        # 取出train_quadruple中，第4列元素等于last_t的triple
+        last_t_graph = train_quadruple[train_quadruple[:, -1] == last_t]
+        self.last_t_num_examples = last_t_graph.size(0)
+        self.last_t_loader = torch.utils.data.DataLoader(
+            range(self.last_t_num_examples),
+            collate_fn=lambda batch: {
+                "triples": last_t_graph[batch, :].long()
+            },
+            shuffle=True,
+            batch_size=self.batch_size,
+            num_workers=self.config.get("train.num_workers"),
+            worker_init_fn=_generate_worker_init_fn(self.config),
+            pin_memory=self.config.get("train.pin_memory"),
+        )
 
         self.is_prepared = True
 
@@ -1099,7 +1377,8 @@ class TrainingJob1vsAll(TrainingJob):
         # forward/backward pass (sp)
         forward_time = -time.time()
         loss_value_sp = self.model("score_sp", triples[:, 0], triples[:, 1], triples[:, 3],
-                               gt_ent=triples[:, 2], gt_rel=triples[:, 1] + self.dataset.num_relations(), gt_tim = triples[:, 3]).sum() / batch_size
+                                   gt_ent=triples[:, 2], gt_rel=triples[:, 1] + self.dataset.num_relations(),
+                                   gt_tim=triples[:, 3]).sum() / batch_size
         loss_value = loss_value_sp.item()
         forward_time += time.time()
         backward_time = -time.time()
@@ -1109,7 +1388,7 @@ class TrainingJob1vsAll(TrainingJob):
         # forward/backward pass (po)
         forward_time -= time.time()
         loss_value_po = self.model("score_po", triples[:, 1], triples[:, 2], triples[:, 3],
-                                gt_ent=triples[:, 0], gt_rel=triples[:, 1], gt_tim = triples[:, 3]).sum() / batch_size
+                                   gt_ent=triples[:, 0], gt_rel=triples[:, 1], gt_tim=triples[:, 3]).sum() / batch_size
         loss_value += loss_value_po.item()
         forward_time += time.time()
         backward_time -= time.time()

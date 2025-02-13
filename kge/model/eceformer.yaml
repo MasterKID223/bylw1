@@ -33,3 +33,24 @@ eceformer:
   time_embedder:
     type: lookup_embedder
     +++: +++
+evokg:
+  graph: GDELT
+  optimize: edge
+  time_interval_log_transform: true
+  static_entity_embed_dim: 200
+  structural_dynamic_entity_embed_dim: 200
+  temporal_dynamic_entity_embed_dim: 200
+  embedding_updater_structural_gconv: RGCN+RNN
+  embedding_updater_temporal_gconv: RGCN+RNN
+  rel_embed_dim: 200
+  num_gconv_layers: 2
+  num_rnn_layers: 1
+  dropout: 0.0
+  embedding_updater_activation: tanh
+  static_dynamic_combine_mode: concat
+  combiner_gconv: none
+  combiner_activation: tanh
+  num_mix_components: 128
+  inter_event_time_mode: node2node_inter_event_times
+  log_dir: evokg_linkpred_seed339
+  rnn_truncate_every: 40

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-import settings
+import kge.model.evokg_model.settings as settings
 
 
 def load_temporal_knowledge_graph(graph_name, idtype=settings.DGL_GRAPH_ID_TYPE):

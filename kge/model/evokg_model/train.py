@@ -15,14 +15,14 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import data
-import settings
-import utils
-from eval import evaluate
-from evokg.model import Model, EmbeddingUpdater, Combiner, EdgeModel, InterEventTimeModel, MultiAspectEmbedding
-from evokg.time_interval_transform import TimeIntervalTransform
-from utils.log_utils import add_logger_file_handler, get_log_root_path, logger
-from utils.model_utils import get_embedding
-from utils.train_utils import setup_cuda, EarlyStopping, nullable_string, activation_string
+import kge.model.evokg_model.settings as settings
+import kge.model.evokg_model.utils as utils
+from kge.model.evokg_model.eval import evaluate
+from kge.model.evokg_model.evokg.model import Model, EmbeddingUpdater, Combiner, EdgeModel, InterEventTimeModel, MultiAspectEmbedding
+from kge.model.evokg_model.evokg.time_interval_transform import TimeIntervalTransform
+from kge.model.evokg_model.utils.log_utils import add_logger_file_handler, get_log_root_path, logger
+from kge.model.evokg_model.utils.model_utils import get_embedding
+from kge.model.evokg_model.utils.train_utils import setup_cuda, EarlyStopping, nullable_string, activation_string
 
 
 def main(args):
