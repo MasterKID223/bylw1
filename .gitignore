@@ -5,5 +5,5 @@
 *idea/*
 *.xml
 *data/
-~*data/*.py
+!*data/*.py
 local/
