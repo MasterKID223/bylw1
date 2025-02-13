@@ -6,5 +6,6 @@
 *idea/*
 *.xml
 *data/
-!*.py
+!*data/*.py
 local/
+!*.py
