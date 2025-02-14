@@ -575,7 +575,7 @@ class TrainingJob(Job):
                     self.evokg_time_optimizer.zero_grad()
                 torch.cuda.empty_cache()
 
-                if self.config.get("embedding_updater_structural_gconv") or self.config.get("embedding_updater_temporal_gconv"):
+                if self.config.get("evokg.embedding_updater_structural_gconv") or self.config.get("evokg.embedding_updater_temporal_gconv"):
                     for emb in dynamic_entity_emb + dynamic_relation_emb:
                         emb.detach_()
 
