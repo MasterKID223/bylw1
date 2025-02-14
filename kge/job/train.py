@@ -121,6 +121,7 @@ class TrainingJob(Job):
         self.evokg_edge_optimizer = None
         self.evokg_time_optimizer = None
         self.evokg_log_root_path = None
+        self.evokg_params = None
 
         # attributes filled in by implementing classes
         self.loader = None
@@ -272,6 +273,15 @@ class TrainingJob(Job):
             temporal=get_embedding(G.num_relations, [self.config.get("evokg.num_rnn_layers"), self.config.get("evokg.rel_embed_dim"), 2], zero_init=True),
         )
         self.evokg_log_root_path = get_log_root_path(self.config.get("evokg.graph"), self.config.get("evokg.log_dir"))
+
+        self.evokg_params = list(self.evokg_model.parameters()) + [
+            self.evokg_static_entity_embeds.structural, self.evokg_static_entity_embeds.temporal,
+            self.evokg_init_dynamic_entity_embeds.structural, self.evokg_init_dynamic_entity_embeds.temporal,
+            self.evokg_init_dynamic_relation_embeds.structural, self.evokg_init_dynamic_relation_embeds.temporal,
+        ]
+        self.evokg_edge_optimizer = torch.optim.AdamW(self.evokg_params, lr=self.config.get("evokg.lr"), weight_decay=self.config.get("evokg.weight_decay"))
+        self.evokg_time_optimizer = torch.optim.AdamW(self.evokg_params, lr=self.config.get("evokg.lr"), weight_decay=self.config.get("evokg.weight_decay"))
+
 
     def evokg_compute_loss(self, model, loss, batch_G, static_entity_emb, dynamic_entity_emb, dynamic_relation_emb, args=None, batch_eid=None):
         assert all([emb.device == torch.device('cpu') for emb in dynamic_entity_emb]), [emb.device for emb in

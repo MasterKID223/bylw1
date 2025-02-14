@@ -54,3 +54,5 @@ evokg:
   inter_event_time_mode: node2node_inter_event_times
   log_dir: evokg_linkpred_seed339
   rnn_truncate_every: 40
+  lr: 0.001
+  weight_decay: 0.00001
