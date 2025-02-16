@@ -163,8 +163,8 @@ class EntityRankingJob(EvaluationJob):
             # score table
             batch_embs = {}
             batch_embs["evokg_embs"] = {
-                "entity": val_dynamic_entity_emb.structural[:, -1, :],
-                "rel": val_dynamic_relation_emb.structural[:, -1, :]
+                "entity": val_dynamic_entity_emb.structural[:, -1, :].to(self.device),
+                "rel": val_dynamic_relation_emb.structural[:, -1, :].to(self.device)
             }
             # o_true_scores = self.model("score_spo", s, p, o, t, "o").view(-1)
             # s_true_scores = self.model("score_spo", s, p, o, t, "s").view(-1)

@@ -616,8 +616,8 @@ class TrainingJob(Job):
                 f(self)
 
             batch["evokg_embs"] = {
-                "entity": self.evokg_dynamic_entity_emb_post_train.structural[:, -1, :],
-                "rel": self.evokg_dynamic_relation_emb_post_train.structural[:, -1, :]
+                "entity": self.evokg_dynamic_entity_emb_post_train.structural[:, -1, :].to(self.device),
+                "rel": self.evokg_dynamic_relation_emb_post_train.structural[:, -1, :].to(self.device)
             }
 
             # process batch (preprocessing + forward pass + backward pass on loss)
