@@ -9,3 +9,4 @@
 !*data/*.py
 local/
 !*.py
+debug.py
