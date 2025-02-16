@@ -1433,7 +1433,7 @@ class TrainingJob1vsAll(TrainingJob):
         loss_value += loss_value_po.item()
         forward_time += time.time()
         backward_time -= time.time()
-        (loss_value_po + loss_value_sp).backward()
+        (loss_value_po + loss_value_sp).backward(retain_graph=True)
         backward_time += time.time()
 
         # all done
