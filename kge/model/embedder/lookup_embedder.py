@@ -36,6 +36,10 @@ class LookupEmbedder(KgeEmbedder):
             self.vocab_size, self.dim, sparse=self.sparse
         )
 
+        # 创建一个网络层，把200的维度转换为320
+        self.evokg_to_eceformer_liner = torch.nn.Linear(self.config.get("evokg.structural_dynamic_entity_embed_dim"), self.config.get("lookup_embedder.dim"))
+
+
         # initialize weights
         init_ = self.get_option("initialize")
         try:
@@ -83,8 +87,19 @@ class LookupEmbedder(KgeEmbedder):
     def embed(self, indexes: Tensor) -> Tensor:
         return self._postprocess(self._embeddings(indexes.long()))
 
+    def evokg_embed(self, evokg_embs, indexes: Tensor) -> Tensor:
+        # evokg_embs是[500, 200]，indexes是实体索引，从evokg_embs中取出对应的实体特征
+        selected_embs = torch.index_select(evokg_embs, 0, indexes)
+        # 把evokg出来的维度特征，转换到eceformer维度的特征
+        embeddings = self.evokg_to_eceformer_liner(selected_embs)
+        return self._postprocess(embeddings)
+
     def embed_all(self) -> Tensor:
         return self._postprocess(self._embeddings_all())
+
+    def evokg_embed_all(self, evokg_embs) -> Tensor:
+        embeddings = self.evokg_to_eceformer_liner(evokg_embs)
+        return self._postprocess(embeddings)
 
     def _postprocess(self, embeddings: Tensor) -> Tensor:
         if self.dropout.p > 0:

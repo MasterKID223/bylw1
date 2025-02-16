@@ -1,11 +1,14 @@
 import math
 import time
+from copy import deepcopy
 
 import torch
 import kge.job
 from kge.job import EvaluationJob, Job
 from kge import Config, Dataset
 from collections import defaultdict
+
+from kge.model.evokg_model.eval import evaluate
 
 
 class EntityRankingJob(EvaluationJob):
@@ -19,6 +22,16 @@ class EntityRankingJob(EvaluationJob):
         )
         self.tie_handling = self.config.get("eval.tie_handling")
         self.is_prepared = False
+
+        # evokg
+        self.evokg_dynamic_entity_emb_post_train = None
+        self.evokg_dynamic_relation_emb_post_train = None
+        self.evokg_model = None
+        self.evokg_val_data_loader = None
+        self.evokg_test_data_loader = None
+        self.G = None
+        self.evokg_static_entity_embeds = None
+
 
         if self.__class__ == EntityRankingJob:
             for f in Job.job_created_hooks:
@@ -78,6 +91,8 @@ class EntityRankingJob(EvaluationJob):
         batch = torch.cat(batch).reshape((-1, 4))
         return batch, label_coords, test_label_coords
 
+
+
     @torch.no_grad()
     def run(self) -> dict:
         self._prepare()
@@ -110,6 +125,13 @@ class EntityRankingJob(EvaluationJob):
         hists_filt = dict()
         hists_filt_test = dict()
 
+        # todo: 验证过程加evokg逻辑
+        dynamic_entity_emb = self.evokg_dynamic_entity_emb_post_train
+        dynamic_relation_emb = self.evokg_dynamic_relation_emb_post_train
+        val_dict, val_dynamic_entity_emb, val_dynamic_relation_emb, loss_weights = \
+            evaluate(self.evokg_model, self.evokg_val_data_loader, self.G, self.evokg_static_entity_embeds, dynamic_entity_emb, dynamic_relation_emb,
+                     self.G.num_relations, self.config, "Validation", self.config.get("evokg.full_link_pred_validation"), self.config.get("evokg.time_pred_eval"), self.epoch)
+
         # let's go
         epoch_time = -time.time()
         for batch_number, batch_coords in enumerate(self.loader):
@@ -139,8 +161,15 @@ class EntityRankingJob(EvaluationJob):
 
             # compute true scores beforehand, since we can't get them from a chunked
             # score table
-            o_true_scores = self.model("score_spo", s, p, o, t, "o").view(-1)
-            s_true_scores = self.model("score_spo", s, p, o, t, "s").view(-1)
+            batch_embs = {}
+            batch_embs["evokg_embs"] = {
+                "entity": val_dynamic_entity_emb.structural[:, -1, :],
+                "rel": val_dynamic_relation_emb.structural[:, -1, :]
+            }
+            # o_true_scores = self.model("score_spo", s, p, o, t, "o").view(-1)
+            # s_true_scores = self.model("score_spo", s, p, o, t, "s").view(-1)
+            o_true_scores = self.model("evokg_score_spo", batch_embs["evokg_embs"], s, p, o, t, "o").view(-1)
+            s_true_scores = self.model("evokg_score_spo", batch_embs["evokg_embs"], s, p, o, t, "s").view(-1)
 
             # default dictionary storing rank and num_ties for each key in rankings
             # as list of len 2: [rank, num_ties]

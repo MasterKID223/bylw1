@@ -56,3 +56,6 @@ evokg:
   rnn_truncate_every: 40
   lr: 0.001
   weight_decay: 0.00001
+  eval: edge
+  full_link_pred_validation: true
+  time_pred_eval: false

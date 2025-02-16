@@ -118,10 +118,13 @@ class TrainingJob(Job):
         self.evokg_static_entity_embeds = None
         self.evokg_init_dynamic_entity_embeds = None
         self.evokg_init_dynamic_relation_embeds = None
+        self.evokg_dynamic_entity_emb_post_train = None
+        self.evokg_dynamic_relation_emb_post_train = None
         self.evokg_edge_optimizer = None
         self.evokg_time_optimizer = None
         self.evokg_log_root_path = None
         self.evokg_params = None
+        self.G = None
 
         # attributes filled in by implementing classes
         self.loader = None
@@ -177,8 +180,8 @@ class TrainingJob(Job):
             raise ValueError("train.type")
 
     def evokg_model_init(self):
-        # todo: evokg的loader
         G = data.load_temporal_knowledge_graph(self.config.get("evokg.graph"))
+        self.G = G
         self.num_relations = G.num_relations
         self.config.log("loading evokg Graph data......")
         self.config.log("\n" + "=" * 80 + "\n"
@@ -190,6 +193,9 @@ class TrainingJob(Job):
         self.evokg_train_data_loader = DataLoader(G.train_times, shuffle=False, collate_fn=collate_fn)
         self.evokg_val_data_loader = DataLoader(G.val_times, shuffle=False, collate_fn=collate_fn)
         self.evokg_test_data_loader = DataLoader(G.test_times, shuffle=False, collate_fn=collate_fn)
+
+        self.valid_job.evokg_val_data_loader = self.evokg_val_data_loader
+        self.valid_job.evokg_test_data_loader = self.evokg_test_data_loader
 
         """Model"""
         # 形状为 (G.number_of_nodes(), G.number_of_nodes() + 1, 2)
@@ -420,6 +426,12 @@ class TrainingJob(Job):
                     and self.epoch % self.config.get("valid.every") == 0
             ):
                 self.valid_job.epoch = self.epoch
+                self.valid_job.evokg_dynamic_entity_emb_post_train = self.evokg_dynamic_entity_emb_post_train
+                self.valid_job.evokg_dynamic_relation_emb_post_train = self.evokg_dynamic_relation_emb_post_train
+                self.valid_job.evokg_model = self.evokg_model
+                self.valid_job.G = self.G
+                self.valid_job.evokg_static_entity_embeds = self.evokg_static_entity_embeds
+
                 trace_entry = self.valid_job.run()
                 self.valid_trace.append(trace_entry)
                 for f in self.post_valid_hooks:
@@ -588,15 +600,25 @@ class TrainingJob(Job):
                 self.evokg_model.embedding_updater.forward(prior_G, batch_G, cumul_G, self.evokg_static_entity_embeds,
                                                 dynamic_entity_emb, dynamic_relation_emb, self.device)
 
+            # eval debug
+            # self.evokg_dynamic_entity_emb_post_train = dynamic_entity_emb  # 经过最后一个时间戳后的所有实体的嵌入特征
+            # self.evokg_dynamic_relation_emb_post_train = dynamic_relation_emb  # 经过最后一个时间戳后的所有关系的嵌入特征
+            # break
+
             if last_batch:
                 # 训练完了一个graph中的所有时刻的图
-                dynamic_entity_emb_post_train = dynamic_entity_emb  # 经过最后一个时间戳后的所有实体的嵌入特征
-                dynamic_relation_emb_post_train = dynamic_relation_emb  # 经过最后一个时间戳后的所有关系的嵌入特征
+                self.evokg_dynamic_entity_emb_post_train = dynamic_entity_emb  # 经过最后一个时间戳后的所有实体的嵌入特征
+                self.evokg_dynamic_relation_emb_post_train = dynamic_relation_emb  # 经过最后一个时间戳后的所有关系的嵌入特征
 
-
-        for batch_index, batch in enumerate(self.loader):
+        # for batch_index, batch in enumerate(self.loader):
+        for batch_index, batch in enumerate(self.last_t_loader):  # batch: batch["triples"] = [512, 4]
             for f in self.pre_batch_hooks:
                 f(self)
+
+            batch["evokg_embs"] = {
+                "entity": self.evokg_dynamic_entity_emb_post_train.structural[:, -1, :],
+                "rel": self.evokg_dynamic_relation_emb_post_train.structural[:, -1, :]
+            }
 
             # process batch (preprocessing + forward pass + backward pass on loss)
             if batch_index % update_freq == 0:
@@ -1381,12 +1403,19 @@ class TrainingJob1vsAll(TrainingJob):
         prepare_time = -time.time()
         triples = batch["triples"].to(self.device)
         batch_size = len(triples)
+        # todo: s=triples[:, 0]/o=triples[:, 2]直接换成dynamic_entity_emb_post_train中对应的特征
+        # todo: r=triples[:, 1]直接换成dynamic_relation_emb_post_train中对应的特征
+
         prepare_time += time.time()
 
         # combine two forward/backward pass to speed up
         # forward/backward pass (sp)
         forward_time = -time.time()
-        loss_value_sp = self.model("score_sp", triples[:, 0], triples[:, 1], triples[:, 3],
+        # todo: 把score_sp修改为evokg_score_sp，直接传入上述得到的特征
+        # loss_value_sp = self.model("score_sp", triples[:, 0], triples[:, 1], triples[:, 3],
+        #                            gt_ent=triples[:, 2], gt_rel=triples[:, 1] + self.dataset.num_relations(),
+        #                            gt_tim=triples[:, 3]).sum() / batch_size
+        loss_value_sp = self.model("evokg_score_sp", batch["evokg_embs"], triples[:, 0], triples[:, 1], triples[:, 3],
                                    gt_ent=triples[:, 2], gt_rel=triples[:, 1] + self.dataset.num_relations(),
                                    gt_tim=triples[:, 3]).sum() / batch_size
         loss_value = loss_value_sp.item()
@@ -1397,7 +1426,9 @@ class TrainingJob1vsAll(TrainingJob):
 
         # forward/backward pass (po)
         forward_time -= time.time()
-        loss_value_po = self.model("score_po", triples[:, 1], triples[:, 2], triples[:, 3],
+        # loss_value_po = self.model("score_po", triples[:, 1], triples[:, 2], triples[:, 3],
+        #                            gt_ent=triples[:, 0], gt_rel=triples[:, 1], gt_tim=triples[:, 3]).sum() / batch_size
+        loss_value_po = self.model("evokg_score_po", batch["evokg_embs"], triples[:, 1], triples[:, 2], triples[:, 3],
                                    gt_ent=triples[:, 0], gt_rel=triples[:, 1], gt_tim=triples[:, 3]).sum() / batch_size
         loss_value += loss_value_po.item()
         forward_time += time.time()

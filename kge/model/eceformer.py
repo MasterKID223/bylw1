@@ -311,14 +311,48 @@ class ECEformer(KgeModel):
                 "undirected spo scores."
             )
 
+    def evokg_score_spo(self, evokg_embs, s: Tensor, p: Tensor, o: Tensor, t: Tensor, direction=None) -> Tensor:
+        entity_embs = evokg_embs["entity"]
+        src_rel_embs = evokg_embs["rel"][..., 0]
+        dst_rel_embs = evokg_embs["rel"][..., 1]
+        rel_embs = torch.cat([src_rel_embs, dst_rel_embs], dim=0)
+        s_emb = self.get_s_embedder().evokg_embed(entity_embs, s)
+        o_emb = self.get_o_embedder().evokg_embed(entity_embs, o)
+        t_emb = self.get_t_embedder().embed(t)
+        if direction:
+            if direction == 's':
+                p_emb = self.get_p_embedder().evokg_embed(rel_embs, p + self.dataset.num_relations())
+            else:
+                p_emb = self.get_p_embedder().evokg_embed(src_rel_embs, p)
+            return self._scorer.score_emb(s_emb, p_emb, o_emb, t_emb, "spo" + direction, s, o).view(-1)
+        else:
+            raise Exception(
+                "The ECEformer model cannot compute "
+                "undirected spo scores."
+            )
+
     def score_sp(self, s: Tensor, p: Tensor, t: Tensor, o: Tensor = None, gt_ent=None, gt_rel=None, gt_tim=None) -> Tensor:
-        s_emb = self.get_s_embedder().embed(s)
+        s_emb = self.get_s_embedder().embed(s)  # 对每个s做嵌入
         p_emb = self.get_p_embedder().embed(p)
         t_emb = self.get_t_embedder().embed(t)
         if o is None:
             o_emb = self.get_o_embedder().embed_all()
         else:
             o_emb = self.get_o_embedder().embed(o)
+
+        return self._scorer.score_emb(s_emb, p_emb, o_emb, t_emb, "sp_", s, None, gt_ent, gt_rel, gt_tim, t)
+
+    def evokg_score_sp(self, evokg_embs, s: Tensor, p: Tensor, t: Tensor, o: Tensor = None, gt_ent=None, gt_rel=None,
+                 gt_tim=None) -> Tensor:
+        entity_embs = evokg_embs["entity"]
+        s_emb = self.get_s_embedder().evokg_embed(entity_embs, s)  # 对每个s做嵌入
+        rel_embs = evokg_embs["rel"][..., 0]
+        p_emb = self.get_p_embedder().evokg_embed(rel_embs, p)  # 这里关系要单独处理
+        t_emb = self.get_t_embedder().embed(t)
+        if o is None:
+            o_emb = self.get_o_embedder().evokg_embed_all(entity_embs)
+        else:
+            o_emb = self.get_o_embedder().evokg_embed(entity_embs, o)
 
         return self._scorer.score_emb(s_emb, p_emb, o_emb, t_emb, "sp_", s, None, gt_ent, gt_rel, gt_tim, t)
 
@@ -330,6 +364,22 @@ class ECEformer(KgeModel):
         o_emb = self.get_o_embedder().embed(o)
         t_emb = self.get_t_embedder().embed(t)
         p_inv_emb = self.get_p_embedder().embed(p + self.dataset.num_relations())
+
+        return self._scorer.score_emb(s_emb, p_inv_emb, o_emb, t_emb, "_po", None, o, gt_ent, gt_rel, gt_tim, t)
+
+    def evokg_score_po(self, evokg_embs, p: Tensor, o: Tensor, t: Tensor, s: Tensor = None, gt_ent=None, gt_rel=None,
+                 gt_tim=None) -> Tensor:
+        entity_embs = evokg_embs["entity"]
+        src_rel_embs = evokg_embs["rel"][..., 0]
+        dst_rel_embs = evokg_embs["rel"][..., 1]
+        rel_embs = torch.cat([src_rel_embs, dst_rel_embs], dim=0)
+        if s is None:
+            s_emb = self.get_s_embedder().evokg_embed_all(entity_embs)
+        else:
+            s_emb = self.get_s_embedder().evokg_embed(entity_embs, s)
+        o_emb = self.get_o_embedder().evokg_embed(entity_embs, o)
+        t_emb = self.get_t_embedder().embed(t)
+        p_inv_emb = self.get_p_embedder().evokg_embed(rel_embs, p + self.dataset.num_relations())
 
         return self._scorer.score_emb(s_emb, p_inv_emb, o_emb, t_emb, "_po", None, o, gt_ent, gt_rel, gt_tim, t)
 

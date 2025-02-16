@@ -11,11 +11,12 @@ import kge.model.evokg_model.settings as settings
 from kge.model.evokg_model.evokg.model import Model, EventTimeHelper
 from kge.model.evokg_model.utils.eval_utils import RankingMetric, RegressionMetric
 from kge.model.evokg_model.utils.log_utils import logger, get_log_root_path
+from kge import Config
 
 
 def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
              init_dynamic_entity_emb, init_dynamic_relation_emb, num_relations,
-             args, phase, full_link_pred_eval, time_pred_eval, epoch=None, loss_weights=None):
+             config: Config, phase, full_link_pred_eval, time_pred_eval, epoch=None, loss_weights=None):
     assert phase in ["Train", "Validation", "Test"], phase
 
     model.eval()
@@ -28,21 +29,21 @@ def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
     log_msg = ""
     with torch.no_grad():
         if phase != "Train":
-            from train import compute_loss
+            from kge.model.evokg_model.train import compute_loss
 
             eval_loss_dict = defaultdict(list)
             batch_tqdm = tqdm(data_loader)
             for i, (prior_G, batch_G, cumul_G, batch_times) in enumerate(batch_tqdm):
                 batch_tqdm.set_description(f"[{phase} / batch-{i}]")
 
-                batch_loss_dict = compute_loss(model, args.eval, batch_G, static_entity_emb,
-                                               dynamic_entity_emb, dynamic_relation_emb, args, batch_eid=None)
+                batch_loss_dict = compute_loss(model, config.get("evokg.eval"), batch_G, static_entity_emb,
+                                               dynamic_entity_emb, dynamic_relation_emb, config, batch_eid=None)
                 for loss_term, loss_val in batch_loss_dict.items():
                     eval_loss_dict[loss_term].append(loss_val.item())
 
                 dynamic_entity_emb, dynamic_relation_emb = \
                     model.embedding_updater.forward(prior_G, batch_G, cumul_G, static_entity_emb,
-                                                    dynamic_entity_emb, dynamic_relation_emb, args.device)
+                                                    dynamic_entity_emb, dynamic_relation_emb, config.get("job.device"))
 
             if epoch is not None:
                 log_msg += f"[Epoch-{epoch}] "
@@ -63,22 +64,22 @@ def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
 
                 if phase in ["Test", "Validation"]:
                     batch_eval_dict = eval_time_prediction(model, batch_G, static_entity_emb,
-                                                           dynamic_entity_emb, dynamic_relation_emb, args)
+                                                           dynamic_entity_emb, dynamic_relation_emb, config)
                     logger.info(f"[batch-{i}] MAE={batch_eval_dict['MAE']:.4f}, RMSE={batch_eval_dict['RMSE']:.4f}")
                     eval_time_diffs.extend(batch_eval_dict['time_diffs'])
 
                 dynamic_entity_emb, dynamic_relation_emb = \
                     model.embedding_updater.forward(prior_G, batch_G, cumul_G, static_entity_emb,
-                                                    dynamic_entity_emb, dynamic_relation_emb, args.device)
+                                                    dynamic_entity_emb, dynamic_relation_emb, config.get("job.device"))
 
             eval_dict['MAE'] = RegressionMetric.mean_absolute_error(eval_time_diffs)
             eval_dict['RMSE'] = RegressionMetric.root_mean_squared_error(eval_time_diffs)
             logger.info(log_msg + f", MAE={eval_dict['MAE']:.4f}, RMSE={eval_dict['RMSE']:.4f}")
 
             if phase == "Test":
-                log_root_path = get_log_root_path(args.graph, args.log_dir)
-                with open(os.path.join(log_root_path, f"{args.result_file_prefix}{args.graph}_eval_{args.eval}_time_pred_test_result.txt"), 'w') as f:
-                    f.write(f"{args.seed},{eval_dict['MAE']:.6f},{eval_dict['RMSE']:.6f}\n")
+                log_root_path = get_log_root_path(config.get("evokg.graph"), config.get("evokg.log_dir"))
+                with open(os.path.join(log_root_path, f"{config.get('evokg.result_file_prefix')}{config.get('evokg.graph')}_eval_{config.get('evokg.eval')}_time_pred_test_result.txt"), 'w') as f:
+                    f.write(f"{config.get('random_seed.torch')},{eval_dict['MAE']:.6f},{eval_dict['RMSE']:.6f}\n")
 
         """Temporal link prediction"""
         if full_link_pred_eval:
@@ -93,16 +94,16 @@ def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
                 batch_tqdm.set_description(f"[{phase} / batch-{i}]")
 
                 if phase == "Test" or \
-                        (phase == "Validation" and args.graph == settings.GRAPH_ICEWS18 and i % 6 == 0) or \
-                        (phase == "Validation" and args.graph == settings.GRAPH_ICEWS14 and i % 4 == 0) or \
-                        (phase == "Validation" and args.graph == settings.GRAPH_GDELT and i % 20 == 0) or \
-                        (phase == "Validation" and args.graph == settings.GRAPH_YAGO and i % 2 == 0) or \
-                        (phase == "Validation" and args.graph == settings.GRAPH_WIKI and i % 3 == 0) or \
-                        (phase == "Validation" and args.eval == 'edge'):
+                        (phase == "Validation" and config.get("evokg.graph") == settings.GRAPH_ICEWS18 and i % 6 == 0) or \
+                        (phase == "Validation" and config.get("evokg.graph") == settings.GRAPH_ICEWS14 and i % 4 == 0) or \
+                        (phase == "Validation" and config.get("evokg.graph") == settings.GRAPH_GDELT and i % 20 == 0) or \
+                        (phase == "Validation" and config.get("evokg.graph") == settings.GRAPH_YAGO and i % 2 == 0) or \
+                        (phase == "Validation" and config.get("evokg.graph") == settings.GRAPH_WIKI and i % 3 == 0) or \
+                        (phase == "Validation" and config.get("evokg.eval") == 'edge'):
 
                     batch_eval_ranks_dict: OrderedDict = eval_link_prediction(
                         model, batch_G, cumul_G, entire_G, static_entity_emb, dynamic_entity_emb, dynamic_relation_emb,
-                        batch_times, args
+                        batch_times, config
                     )
 
                     batch_eval_edge_ranks = next(iter(batch_eval_ranks_dict.values()))
@@ -128,7 +129,7 @@ def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
 
                 dynamic_entity_emb, dynamic_relation_emb = \
                     model.embedding_updater.forward(prior_G, batch_G, cumul_G, static_entity_emb,
-                                                    dynamic_entity_emb, dynamic_relation_emb, args.device)
+                                                    dynamic_entity_emb, dynamic_relation_emb, config.get("job.device"))
 
             if loss_weights is None:
                 weights_list = list(eval_ranks_dict.keys())
@@ -145,9 +146,9 @@ def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
                                   f"Rec@10={eval_dict['REC10']:.6f}, Rec@100={eval_dict['REC100']:.6f}")
 
             if phase == "Test":
-                log_root_path = get_log_root_path(args.graph, args.log_dir)
-                with open(os.path.join(log_root_path, f"{args.result_file_prefix}{args.graph}_eval_{args.eval}_link_pred_test_result.txt"), 'w') as f:
-                    f.write(f"{args.seed},{eval_dict['REC1']:.6f},{eval_dict['REC3']:.6f},{eval_dict['REC10']:.6f},{eval_dict['MRR']:.6f}\n")
+                log_root_path = get_log_root_path(config.get("evokg.graph"), config.get("evokg.log_dir"))
+                with open(os.path.join(log_root_path, f"{config.get('evokg.result_file_prefix')}{config.get('evokg.graph')}_eval_{config.get('evokg.eval')}_link_pred_test_result.txt"), 'w') as f:
+                    f.write(f"{config.get('random_seed.torch')},{eval_dict['REC1']:.6f},{eval_dict['REC3']:.6f},{eval_dict['REC10']:.6f},{eval_dict['MRR']:.6f}\n")
 
         if phase != "Train":
             eval_dict['loss'] = sum([sum(l) for l in eval_loss_dict.values()])
@@ -156,12 +157,12 @@ def evaluate(model: Model, data_loader, entire_G, static_entity_emb,
 
 # noinspection PyTypeChecker
 def eval_link_prediction(model: Model, batch_G, cumul_G, entire_G, static_entity_emb, dynamic_entity_emb,
-                         dynamic_relation_emb, eval_times, args):
+                         dynamic_relation_emb, eval_times, config: Config):
     assert all([emb.device == torch.device('cpu') for emb in dynamic_entity_emb]), [emb.device for emb in dynamic_entity_emb]
     model.eval()
 
     with torch.no_grad():
-        cumul_G = cumul_G.to(args.device)
+        cumul_G = cumul_G.to(config.get("job.device"))
 
         eval_time_from, eval_time_to = eval_times[0], eval_times[-1]
         eval_eid = torch.nonzero((eval_time_from <= cumul_G.edata['time']) & (cumul_G.edata['time'] <= eval_time_to), as_tuple=False).squeeze().view(-1)
@@ -172,11 +173,11 @@ def eval_link_prediction(model: Model, batch_G, cumul_G, entire_G, static_entity
         with cumul_G.local_scope():
             """Compute edge likelihood"""
             edges_target_entity_log_prob = torch.empty(len(eval_eid), entire_G.num_nodes()).fill_(-1e20).cpu()  # shape: (# edges in cumul_G & belonging to eval_times, # nodes in the entire graph)
-            if args.eval in ['edge', 'both']:
-                cumul_G_structural_static_emb = static_entity_emb.structural[cumul_G.ndata[dgl.NID].long()].to(args.device)
-                cumul_G_structural_dynamic_emb = dynamic_entity_emb.structural[cumul_G.ndata[dgl.NID].long()][:, -1, :].to(args.device)
+            if config.get("evokg.eval") in ['edge', 'both']:
+                cumul_G_structural_static_emb = static_entity_emb.structural[cumul_G.ndata[dgl.NID].long()].to(config.get("job.device"))
+                cumul_G_structural_dynamic_emb = dynamic_entity_emb.structural[cumul_G.ndata[dgl.NID].long()][:, -1, :].to(config.get("job.device"))
                 cumul_G_structural_combined_emb = model.combiner(cumul_G_structural_static_emb, cumul_G_structural_dynamic_emb, cumul_G)
-                structural_dynamic_relation_emb = dynamic_relation_emb.structural[:, -1, :, :].to(args.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+                structural_dynamic_relation_emb = dynamic_relation_emb.structural[:, -1, :, :].to(config.get("job.device"))  # [:, -1, :, :] to retrieve last hidden from rnn
 
                 cumul_G.ndata['emb'] = cumul_G_structural_combined_emb
                 _, edges_head_pred, edges_rel_pred, edges_tail_pred = \
@@ -188,15 +189,15 @@ def eval_link_prediction(model: Model, batch_G, cumul_G, entire_G, static_entity
 
             """Compute inter-event time likelihood"""
             edges_time_log_prob = torch.empty(len(eval_eid), entire_G.num_nodes()).fill_(-1e20).cpu()  # shape=(# edges in cumul_G & belonging to eval_times, # node in the entire graph)
-            if args.eval in ['time', 'both']:
-                cumul_G_temporal_static_emb = static_entity_emb.temporal[cumul_G.ndata[dgl.NID].long()].to(args.device)
-                cumul_G_temporal_dynamic_emb = dynamic_entity_emb.temporal[cumul_G.ndata[dgl.NID].long()][:, -1, :, :].to(args.device)
-                temporal_dynamic_relation_emb = dynamic_relation_emb.temporal[:, -1, :, :].to(args.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+            if config.get("evokg.eval") in ['time', 'both']:
+                cumul_G_temporal_static_emb = static_entity_emb.temporal[cumul_G.ndata[dgl.NID].long()].to(config.get("job.device"))
+                cumul_G_temporal_dynamic_emb = dynamic_entity_emb.temporal[cumul_G.ndata[dgl.NID].long()][:, -1, :, :].to(config.get("job.device"))
+                temporal_dynamic_relation_emb = dynamic_relation_emb.temporal[:, -1, :, :].to(config.get("job.device"))  # [:, -1, :, :] to retrieve last hidden from rnn
 
                 time_log_prob_eval_dict = \
                     eval_edges_iet(model, cumul_G,
                                    cumul_G_temporal_dynamic_emb, cumul_G_temporal_static_emb, temporal_dynamic_relation_emb,
-                                   eval_times, entire_G, device=args.device,
+                                   eval_times, entire_G, device=config.get("job.device"),
                                    node_latest_event_time=model.node_latest_event_time,
                                    compute_ranking_metrics=False)
                 edges_time_log_prob_cumul_G = time_log_prob_eval_dict['edge_scores']  # shape=(# edges in cumul_G & belonging to eval_times, # nodes in cumul_G)
@@ -205,7 +206,7 @@ def eval_link_prediction(model: Model, batch_G, cumul_G, entire_G, static_entity
             """Evaluate triples"""
             entire_G_edges_src, entire_G_edges_dst = entire_G.edges()
             entire_G_edges_rel = entire_G.edata['rel_type']
-            entire_G_edges = torch.cat((entire_G_edges_src.view(-1, 1), entire_G_edges_rel.view(-1, 1), entire_G_edges_dst.view(-1, 1)), dim=1).to(args.device)
+            entire_G_edges = torch.cat((entire_G_edges_src.view(-1, 1), entire_G_edges_rel.view(-1, 1), entire_G_edges_dst.view(-1, 1)), dim=1).to(config.get("job.device"))
 
             cumul_G_edges_src, cumul_G_edges_dst = cumul_G.edges()
             eval_triples = torch.cat((cumul_G.ndata[dgl.NID][cumul_G_edges_src[eval_eid].long()].view(-1, 1),
@@ -216,9 +217,9 @@ def eval_link_prediction(model: Model, batch_G, cumul_G, entire_G, static_entity
             batch_G_inter_event_times = EventTimeHelper.get_sparse_inter_event_times(batch_G, model.node_latest_event_time[..., 0])
 
             # weights for (target_entity_log_prob, time_log_prob)
-            if args.eval == 'edge':
+            if config.get("evokg.eval") == 'edge':
                 log_prob_weights_list = [(1.0, 0.0)]
-            elif args.eval == 'time':
+            elif config.get("evokg.eval") == 'time':
                 log_prob_weights_list = [(0.0, 1.0)]
             else:  # eval both
                 time_log_prob_weights = np.linspace(1.0, 0.0, num=11).tolist() + [1.5, 2.0, 3.0]
@@ -248,13 +249,13 @@ def eval_link_prediction(model: Model, batch_G, cumul_G, entire_G, static_entity
         return eval_ranks_dict
 
 
-def eval_time_prediction(model, batch_G, static_entity_emb, dynamic_entity_emb, dynamic_relation_emb, args):
+def eval_time_prediction(model, batch_G, static_entity_emb, dynamic_entity_emb, dynamic_relation_emb, config: Config):
     model.eval()
 
     with torch.no_grad():
-        batch_G_temporal_static_emb = static_entity_emb.temporal[batch_G.ndata[dgl.NID].long()].to(args.device)
-        batch_G_temporal_dynamic_emb = dynamic_entity_emb.temporal[batch_G.ndata[dgl.NID].long()][:, -1, :, :].to(args.device)
-        temporal_dynamic_relation_emb = dynamic_relation_emb.temporal[:, -1, :, :].to(args.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+        batch_G_temporal_static_emb = static_entity_emb.temporal[batch_G.ndata[dgl.NID].long()].to(config.get("job.device"))
+        batch_G_temporal_dynamic_emb = dynamic_entity_emb.temporal[batch_G.ndata[dgl.NID].long()][:, -1, :, :].to(config.get("job.device"))
+        temporal_dynamic_relation_emb = dynamic_relation_emb.temporal[:, -1, :, :].to(config.get("job.device"))  # [:, -1, :, :] to retrieve last hidden from rnn
 
         expected_event_time = model.inter_event_time_model.expected_event_time(
             batch_G, batch_G_temporal_dynamic_emb, batch_G_temporal_static_emb, temporal_dynamic_relation_emb,

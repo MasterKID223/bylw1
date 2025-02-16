@@ -17,6 +17,7 @@ from tqdm import tqdm
 import data
 import kge.model.evokg_model.settings as settings
 import kge.model.evokg_model.utils as utils
+from kge import Config
 from kge.model.evokg_model.eval import evaluate
 from kge.model.evokg_model.evokg.model import Model, EmbeddingUpdater, Combiner, EdgeModel, InterEventTimeModel, MultiAspectEmbedding
 from kge.model.evokg_model.evokg.time_interval_transform import TimeIntervalTransform
@@ -370,32 +371,32 @@ def unpack_checkpoint(checkpoint, model, edge_optimizer, time_optimizer):
            node_latest_event_time, checkpoint['loss_weights'], checkpoint['args']
 
 
-def compute_loss(model, loss, batch_G, static_entity_emb, dynamic_entity_emb, dynamic_relation_emb, args, batch_eid=None):
+def compute_loss(model, loss, batch_G, static_entity_emb, dynamic_entity_emb, dynamic_relation_emb, config: Config, batch_eid=None):
     assert all([emb.device == torch.device('cpu') for emb in dynamic_entity_emb]), [emb.device for emb in dynamic_entity_emb]
 
     if batch_eid is not None:
         assert len(batch_eid) > 0, batch_eid.shape
         sub_batch_G = dgl.edge_subgraph(batch_G, batch_eid.type(settings.DGL_GRAPH_ID_TYPE), preserve_nodes=False)
         sub_batch_G.ndata[dgl.NID] = batch_G.ndata[dgl.NID][sub_batch_G.ndata[dgl.NID].long()]  # map nid in sub_batch_G to nid in the full graph
-        sub_batch_G = sub_batch_G.to(args.device)
+        sub_batch_G = sub_batch_G.to(config.get("job.device"))
 
         batch_eid = None  # this is needed to NOT perform further edge selection in the loss functions below
     else:
-        sub_batch_G = batch_G.to(args.device)
+        sub_batch_G = batch_G.to(config.get("job.device"))
     sub_batch_G.num_relations = batch_G.num_relations
     sub_batch_G.num_all_nodes = batch_G.num_all_nodes
 
     loss_dict = {}
     """Edge loss"""
     if loss in ['edge', 'both']:
-        sub_batch_G_structural_static_entity_emb = static_entity_emb.structural[sub_batch_G.ndata[dgl.NID].long()].to(args.device)
+        sub_batch_G_structural_static_entity_emb = static_entity_emb.structural[sub_batch_G.ndata[dgl.NID].long()].to(config.get("job.device"))
         # [352， 200] 从dynamic_entity_emb中取出当前batch_G中节点的嵌入
-        sub_batch_G_structural_dynamic_entity_emb = dynamic_entity_emb.structural[sub_batch_G.ndata[dgl.NID].long()][:, -1, :].to(args.device)  # [:, -1, :] to retrieve last hidden from rnn 从rnn中检索最后一个隐藏项
+        sub_batch_G_structural_dynamic_entity_emb = dynamic_entity_emb.structural[sub_batch_G.ndata[dgl.NID].long()][:, -1, :].to(config.get("job.device"))  # [:, -1, :] to retrieve last hidden from rnn 从rnn中检索最后一个隐藏项
         sub_batch_G_combined_emb = model.combiner(sub_batch_G_structural_static_entity_emb,
                                                   sub_batch_G_structural_dynamic_entity_emb,
                                                   sub_batch_G)
         # [240, 200, 2] 所有关系的嵌入，这里的2应该表示关系和逆关系
-        structural_dynamic_relation_emb = dynamic_relation_emb.structural[:, -1, :, :].to(args.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+        structural_dynamic_relation_emb = dynamic_relation_emb.structural[:, -1, :, :].to(config.get("job.device"))  # [:, -1, :, :] to retrieve last hidden from rnn
 
         # equation(15)
         edge_LL = model.edge_model(sub_batch_G, sub_batch_G_combined_emb, eid=batch_eid,
@@ -406,9 +407,9 @@ def compute_loss(model, loss, batch_G, static_entity_emb, dynamic_entity_emb, dy
 
     """Inter-event time loss"""
     if loss in ['time', 'both']:  # 这个是做时间预测的部分，link-pred不用
-        sub_batch_G_temporal_static_entity_emb = static_entity_emb.temporal[sub_batch_G.ndata[dgl.NID].long()].to(args.device)
-        sub_batch_G_temporal_dynamic_entity_emb = dynamic_entity_emb.temporal[sub_batch_G.ndata[dgl.NID].long()][:, -1, :, :].to(args.device)  # [:, -1, :, :] to retrieve last hidden from rnn
-        temporal_dynamic_relation_emb = dynamic_relation_emb.temporal[:, -1, :, :].to(args.device)  # [:, -1, :, :] to retrieve last hidden from rnn
+        sub_batch_G_temporal_static_entity_emb = static_entity_emb.temporal[sub_batch_G.ndata[dgl.NID].long()].to(config.get("job.device"))
+        sub_batch_G_temporal_dynamic_entity_emb = dynamic_entity_emb.temporal[sub_batch_G.ndata[dgl.NID].long()][:, -1, :, :].to(config.get("job.device"))  # [:, -1, :, :] to retrieve last hidden from rnn
+        temporal_dynamic_relation_emb = dynamic_relation_emb.temporal[:, -1, :, :].to(config.get("job.device"))  # [:, -1, :, :] to retrieve last hidden from rnn
         
         # equation(16)
         inter_event_time_LL = model.inter_event_time_model.log_prob_density(
