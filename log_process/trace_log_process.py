@@ -24,7 +24,7 @@ hits_metrics = {
     'mean_reciprocal_rank': []
 }
 
-with open('log_process/trace-gdelt-gcn-163.yaml', 'r') as f:
+with open('log_process/trace-gdelt-evokg.yaml', 'r') as f:
     for line in f:
         try:
             entry = yaml.safe_load(line)

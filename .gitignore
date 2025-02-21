@@ -2,8 +2,8 @@
 *.del
 *.txt
 *.pckl
-.idea/*
-*idea/*
+.idea/
+*idea/
 *.xml
 *data/
 !*data/*.py

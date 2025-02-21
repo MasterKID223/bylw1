@@ -10,9 +10,9 @@ job:
   type: train
 
   # Main device to use for this job (e.g., 'cpu', 'cuda', 'cuda:0')
-  device: 'cuda'
+  device: 'cuda:1'
 
-  multi_gpu: True
+  multi_gpu: False
 
 # The seeds of the PRNGs can be set manually for (increased) reproducability.
 # Use -1 to use default seed.

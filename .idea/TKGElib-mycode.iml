@@ -3,6 +3,10 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/local/experiments" />
+      <excludeFolder url="file://$MODULE_DIR$/data/gdelt" />
+      <excludeFolder url="file://$MODULE_DIR$/data/yago11k" />
+      <excludeFolder url="file://$MODULE_DIR$/kge/model/evokg_model/data/GDELT" />
+      <excludeFolder url="file://$MODULE_DIR$/kge/model/evokg_model/data/YAGO" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.7 (evokg) (2)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
