@@ -34,7 +34,7 @@ eceformer:
     type: lookup_embedder
     +++: +++
 evokg:
-  graph: YAGO
+  graph: ICEWS_500
   optimize: edge
   time_interval_log_transform: true
   static_entity_embed_dim: 200

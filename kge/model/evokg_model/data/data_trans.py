@@ -1,7 +1,7 @@
 import os
 
 if __name__ == '__main__':
-    data_name = "YAGO"
+    data_name = "WIKI"
     with open(f"F:\\code\\bylw\\TKGElib-mycode\\kge\\model\\evokg_model\\data\\{data_name}\\train.del", "r") as f:
         # 把这个文件中的每一行的最后一个位置加\t，然后再加0，重新保存为test.txt
         for line in f.readlines():
@@ -30,6 +30,6 @@ if __name__ == '__main__':
                 f.write(line + "\n")
 
     # 往stat.txt中写入500\t20\t0
-    # with open("F:\\code\\bylw\\TKGElib-mycode\\kge\\model\\evokg_model\\data\\YAGO\\stat.txt", "w") as f:
-    #     f.write("10623\t10\t73")
+    with open(f"F:\\code\\bylw\\TKGElib-mycode\\kge\\model\\evokg_model\\data\\{data_name}\\stat.txt", "w") as f:
+        f.write("12554\t24\t0")
 

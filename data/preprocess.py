@@ -20,7 +20,7 @@ import numpy as np
 from collections import OrderedDict
 
 def store_map(symbol_map, filename):
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         for symbol, index in symbol_map.items():
             f.write(f"{index}\t{symbol}\n")
 
@@ -56,7 +56,7 @@ if __name__ == "__main__":
     rel_id = 0
     tim_id = 0
     for split, filename in raw_split_files.items():
-        with open(args.folder + "/" + filename, "r") as f:
+        with open(args.folder + "/" + filename, "r", encoding="utf-8") as f:
             raw[split] = list(map(lambda s: s.strip().split("\t"), f.readlines()))
             for t in raw[split]:
                 if t[S] not in entities:
