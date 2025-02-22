@@ -37,9 +37,9 @@ evokg:
   graph: WIKI
   optimize: edge
   time_interval_log_transform: true
-  static_entity_embed_dim: 200
-  structural_dynamic_entity_embed_dim: 200
-  temporal_dynamic_entity_embed_dim: 200
+  static_entity_embed_dim: 192
+  structural_dynamic_entity_embed_dim: 192
+  temporal_dynamic_entity_embed_dim: 192
   embedding_updater_structural_gconv: RGCN+RNN
   embedding_updater_temporal_gconv: RGCN+RNN
   rel_embed_dim: 200
