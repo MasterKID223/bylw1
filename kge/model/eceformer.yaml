@@ -34,7 +34,7 @@ eceformer:
     type: lookup_embedder
     +++: +++
 evokg:
-  graph: ICEWS_500
+  graph: WIKI
   optimize: edge
   time_interval_log_transform: true
   static_entity_embed_dim: 200
