@@ -42,7 +42,7 @@ evokg:
   temporal_dynamic_entity_embed_dim: 192
   embedding_updater_structural_gconv: RGCN+RNN
   embedding_updater_temporal_gconv: RGCN+RNN
-  rel_embed_dim: 200
+  rel_embed_dim: 192
   num_gconv_layers: 2
   num_rnn_layers: 1
   dropout: 0.0
