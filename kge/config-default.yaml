@@ -10,7 +10,7 @@ job:
   type: train
 
   # Main device to use for this job (e.g., 'cpu', 'cuda', 'cuda:0')
-  device: 'cuda:1'
+  device: 'cuda:0'
 
   multi_gpu: False
 
