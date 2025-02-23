@@ -34,15 +34,15 @@ eceformer:
     type: lookup_embedder
     +++: +++
 evokg:
-  graph: WIKI
+  graph: ICEWS18
   optimize: edge
   time_interval_log_transform: true
-  static_entity_embed_dim: 192
-  structural_dynamic_entity_embed_dim: 192
-  temporal_dynamic_entity_embed_dim: 192
+  static_entity_embed_dim: 200
+  structural_dynamic_entity_embed_dim: 200
+  temporal_dynamic_entity_embed_dim: 200
   embedding_updater_structural_gconv: RGCN+RNN
   embedding_updater_temporal_gconv: RGCN+RNN
-  rel_embed_dim: 192
+  rel_embed_dim: 200
   num_gconv_layers: 2
   num_rnn_layers: 1
   dropout: 0.0
