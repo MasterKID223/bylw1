@@ -59,6 +59,7 @@ if __name__ == "__main__":
         with open(args.folder + "/" + filename, "r", encoding="utf-8") as f:
             raw[split] = list(map(lambda s: s.strip().split("\t"), f.readlines()))
             for t in raw[split]:
+                t = list(map(lambda s: s.strip(), t))
                 if t[S] not in entities:
                     entities[t[S]] = ent_id
                     ent_id += 1
@@ -80,7 +81,8 @@ if __name__ == "__main__":
                 entities_in_train = entities.copy()
                 relations_in_train = relations.copy()
                 times_in_train = times.copy()
-    
+
+    print(f"max ent_id = {ent_id}")
     print(f"{len(relations)} distinct relations")
     print(f"{len(entities)} distinct entities")
     print(f"{len(times)} distinct entities")
@@ -106,6 +108,7 @@ if __name__ == "__main__":
         with open(os.path.join(args.folder, filename), "w") as f:
             size_unseen = 0
             for n, t in enumerate(raw[split]):
+                t = list(map(lambda s: s.strip(), t))
                 f.write(
                     str(entities[t[S]])
                     + "\t"
