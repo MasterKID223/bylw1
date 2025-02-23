@@ -50,7 +50,7 @@ eceformer:
   output_dropout: 0.6
   nlayer: 6
   nhead: 8
-  ff_dim: 1024
+  ff_dim: 512
 valid:
   early_stopping:
     min_threshold:

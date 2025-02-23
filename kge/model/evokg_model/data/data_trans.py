@@ -30,6 +30,6 @@ if __name__ == '__main__':
                 f.write(line + "\n")
 
     # 往stat.txt中写入500\t20\t0
-    # with open(f"F:\\code\\bylw\\TKGElib-mycode\\kge\\model\\evokg_model\\data\\{data_name}\\stat.txt", "w") as f:
-    #     f.write("7128\t230\t0")
+    with open(f"F:\\code\\bylw\\TKGElib-mycode\\kge\\model\\evokg_model\\data\\{data_name}\\stat.txt", "w") as f:
+        f.write("23033\t256\t0")
 
